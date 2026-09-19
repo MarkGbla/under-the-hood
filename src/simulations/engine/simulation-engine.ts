@@ -23,7 +23,8 @@ export function advanceSimulation(
   snapshot: SimulationSnapshot,
   mode: AdvanceMode,
 ): SimulationSnapshot {
-  if (snapshot.status === "completed" || snapshot.status === "failed") {
+  if (snapshot.status === "completed" || snapshot.status === "failed"
+    || (mode === "automatic" && snapshot.status !== "playing")) {
     return snapshot;
   }
 

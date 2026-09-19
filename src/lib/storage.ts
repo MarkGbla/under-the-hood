@@ -1,4 +1,4 @@
-import { learningStages, type LessonSlug } from "@/types/lesson";
+import { learningStages, lessonSlugs, type LessonSlug } from "@/types/lesson";
 import { PROGRESS_VERSION, type AppProgress, type LessonProgress, type ProgressPreferences } from "@/types/progress";
 
 const STORAGE_KEY = "under-the-hood:progress";
@@ -42,71 +42,128 @@ function browserStorage(): Storage | null {
   }
 }
 
-function isProgress(value: unknown): value is AppProgress {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<AppProgress>;
-  return candidate.version === PROGRESS_VERSION
-    && Array.isArray(candidate.completedLessons)
-    && Boolean(candidate.lessons && typeof candidate.lessons === "object")
-    && Boolean(candidate.tours && typeof candidate.tours === "object")
-    && Boolean(candidate.preferences && typeof candidate.preferences === "object");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function sanitizeProgress(progress: AppProgress): AppProgress {
+function nonNegativeInteger(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function timestamp(value: unknown) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : new Date(0).toISOString();
+}
+
+function sanitizeProgress(progress: Record<string, unknown>): AppProgress {
+  const completed = new Set<LessonSlug>(
+    Array.isArray(progress.completedLessons)
+      ? progress.completedLessons.filter((slug): slug is LessonSlug => lessonSlugs.includes(slug))
+      : [],
+  );
   const lessons: AppProgress["lessons"] = {};
-  for (const [key, value] of Object.entries(progress.lessons)) {
-    if (!value || typeof value !== "object") continue;
-    const stageIndex = Math.max(0, Math.min(learningStages.length - 1, Number(value.stageIndex) || 0));
-    lessons[key as keyof AppProgress["lessons"]] = {
-      ...createLessonProgress(String(value.lessonId || key)),
-      ...value,
+  const storedLessons = isRecord(progress.lessons) ? progress.lessons : {};
+  for (const key of [...lessonSlugs, "login-capstone"] as const) {
+    const stored = storedLessons[key];
+    const wasCompleted = key !== "login-capstone" && completed.has(key);
+    if (!isRecord(stored) && !wasCompleted) continue;
+    const value = isRecord(stored) ? stored : {};
+    const stageIndex = Math.min(learningStages.length - 1, nonNegativeInteger(value.stageIndex));
+    const quizResults: LessonProgress["quizResults"] = Object.fromEntries(
+      Object.entries(isRecord(value.quizResults) ? value.quizResults : {}).flatMap(([id, result]) => (
+        isRecord(result) ? [[id, {
+          questionId: typeof result.questionId === "string" ? result.questionId : id,
+          correct: result.correct === true,
+          attempts: nonNegativeInteger(result.attempts),
+          answeredAt: timestamp(result.answeredAt),
+        }]] : []
+      )),
+    );
+    const lesson = {
+      lessonId: typeof value.lessonId === "string" && value.lessonId ? value.lessonId : key,
       stageIndex,
       stage: learningStages[stageIndex],
+      simulationStep: nonNegativeInteger(value.simulationStep),
+      meaningfulInteraction: value.meaningfulInteraction === true,
+      explanationCompleted: value.explanationCompleted === true,
+      completed: value.completed === true || wasCompleted,
+      confidence: value.confidence === "yes" || value.confidence === "i-think-so" || value.confidence === "not-yet"
+        ? value.confidence : null,
+      quizResults,
+      updatedAt: timestamp(value.updatedAt),
+    } satisfies LessonProgress;
+    lessons[key] = lesson;
+    if (lesson.completed && key !== "login-capstone") completed.add(key);
+  }
+  const tours: AppProgress["tours"] = Object.fromEntries(
+    Object.entries(isRecord(progress.tours) ? progress.tours : {}).flatMap(([id, tour]) => (
+      isRecord(tour) && (tour.status === "completed" || tour.status === "skipped")
+        ? [[id, { status: tour.status, updatedAt: timestamp(tour.updatedAt) }]] : []
+    )),
+  );
+  const preferences = isRecord(progress.preferences) ? progress.preferences : {};
+  const visited = progress.lastVisited;
+  const allowedPaths = [...lessonSlugs.map((slug) => `/learn/${slug}`), "/simulations/login", "/playground"];
+  let lastVisited: AppProgress["lastVisited"] = null;
+  if (isRecord(visited) && typeof visited.path === "string" && allowedPaths.includes(visited.path)) {
+    lastVisited = {
+      path: visited.path,
+      ...(typeof visited.lessonId === "string" ? { lessonId: visited.lessonId } : {}),
+      updatedAt: timestamp(visited.updatedAt),
     };
   }
-  return { ...createEmptyProgress(), ...progress, version: PROGRESS_VERSION, lessons };
-}
-
-export function migrateProgress(value: unknown): AppProgress {
-  if (isProgress(value)) return sanitizeProgress(value);
-  if (!value || typeof value !== "object") return createEmptyProgress();
-  const legacy = value as { version?: number; tours?: AppProgress["tours"]; completedLessons?: LessonSlug[]; lessons?: AppProgress["lessons"] };
-  if (legacy.version !== 1) return createEmptyProgress();
   return {
-    ...createEmptyProgress(),
-    completedLessons: Array.isArray(legacy.completedLessons) ? legacy.completedLessons : [],
-    lessons: legacy.lessons && typeof legacy.lessons === "object" ? legacy.lessons : {},
-    tours: legacy.tours && typeof legacy.tours === "object" ? legacy.tours : {},
+    version: PROGRESS_VERSION,
+    completedLessons: [...completed],
+    lessons,
+    tours,
+    preferences: {
+      showInstructorPrompts: typeof preferences.showInstructorPrompts === "boolean" ? preferences.showInstructorPrompts : true,
+    },
+    lastVisited,
   };
 }
 
-function parseStoredValue(raw: string | null): AppProgress | null {
+export function migrateProgress(value: unknown): AppProgress {
+  if (!isRecord(value) || (value.version !== PROGRESS_VERSION && value.version !== 1)) return createEmptyProgress();
+  return sanitizeProgress(value);
+}
+
+function readStoredProgress(storage: Storage, key: string): AppProgress | null {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(key);
+  } catch {
+    return null;
+  }
   if (!raw) return null;
-  const parsed = JSON.parse(raw) as unknown;
-  if (isProgress(parsed)) return sanitizeProgress(parsed);
-  if ((parsed as { version?: number } | null)?.version === 1) return migrateProgress(parsed);
-  throw new Error("Unsupported progress data");
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed) && (parsed.version === PROGRESS_VERSION || parsed.version === 1)) return migrateProgress(parsed);
+  } catch {
+    // Only remove this corrupt record; the other key may still contain progress.
+  }
+  try {
+    storage.removeItem(key);
+  } catch {
+    // Reading must remain safe when the browser blocks storage mutations.
+  }
+  return null;
 }
 
 export function getProgress(): AppProgress {
   const storage = browserStorage();
   if (!storage) return createEmptyProgress();
-  try {
-    const current = parseStoredValue(storage.getItem(STORAGE_KEY));
-    if (current) return current;
-    const legacy = parseStoredValue(storage.getItem(LEGACY_STORAGE_KEY));
-    if (legacy) {
+  const current = readStoredProgress(storage, STORAGE_KEY);
+  if (current) return current;
+  const legacy = readStoredProgress(storage, LEGACY_STORAGE_KEY);
+  if (legacy) {
+    try {
       storage.setItem(STORAGE_KEY, JSON.stringify(legacy));
       storage.removeItem(LEGACY_STORAGE_KEY);
-      return legacy;
-    }
-  } catch {
-    try {
-      storage.removeItem(STORAGE_KEY);
-      storage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
-      // Storage can become unavailable between reads; return safe defaults.
+      // Keep the readable legacy progress if migration cannot be persisted.
     }
+    return legacy;
   }
   return createEmptyProgress();
 }
@@ -131,9 +188,8 @@ export function updateLessonProgress(lessonSlug: LessonSlug | "login-capstone", 
   const progress = getProgress();
   const current = progress.lessons[lessonSlug] ?? createLessonProgress(patch.lessonId ?? lessonSlug);
   const nextLesson = { ...current, ...patch, updatedAt: new Date().toISOString() };
-  const completedLessons = nextLesson.completed && lessonSlug !== "login-capstone" && !progress.completedLessons.includes(lessonSlug)
-    ? [...progress.completedLessons, lessonSlug]
-    : progress.completedLessons;
+  const completedLessons = progress.completedLessons.filter((slug) => slug !== lessonSlug);
+  if (nextLesson.completed && lessonSlug !== "login-capstone") completedLessons.push(lessonSlug);
   saveProgress({ ...progress, completedLessons, lessons: { ...progress.lessons, [lessonSlug]: nextLesson } });
   return nextLesson;
 }

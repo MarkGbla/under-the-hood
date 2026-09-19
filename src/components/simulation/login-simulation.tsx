@@ -10,7 +10,7 @@ import { Packet } from "./packet";
 import { StatusCode, statusReason } from "./status-code";
 import { SystemNode } from "./system-node";
 import { useSimulationPlayback } from "@/hooks/use-simulation-playback";
-import { usePresentationMode, usePresentationShortcuts } from "@/hooks/use-presentation-mode";
+import { usePresentationMode, useSimulationShortcuts } from "@/hooks/use-presentation-mode";
 import {
   loginSimulationDefinition,
   signupSimulationDefinition,
@@ -98,11 +98,12 @@ export function LoginSimulation({ onInteraction }: { onInteraction?: () => void 
   useSimulationPlayback(store);
 
   const { isPresenting, setPresenting } = usePresentationMode();
-  usePresentationShortcuts({
-    enabled: isPresenting,
+  useSimulationShortcuts({
+    presenting: isPresenting,
     store,
     onExit: () => setPresenting(false),
     onFailure: () => runScenario(isSignup ? "email-taken" : "wrong-password"),
+    onInteraction,
   });
 
   useEffect(() => () => {
@@ -238,6 +239,7 @@ export function LoginSimulation({ onInteraction }: { onInteraction?: () => void 
             <div className="workbench-topbar">
               <div><i /><span>{isSignup ? "Sign-up" : "Login"} flow · {statusLabels[status]}</span></div>
               <div className="workbench-controls" data-tour="controls" aria-label="Simulation playback controls">
+                <span className="key-legend" aria-hidden="true"><kbd>Space</kbd> play <kbd>←</kbd><kbd>→</kbd> step <kbd>R</kbd> restart</span>
                 <button type="button" onClick={() => store.getState().restart()}>Restart</button>
                 <button type="button" aria-label="Step backward" disabled={currentStepIndex === 0} onClick={() => store.getState().previous()}>◀</button>
                 <button

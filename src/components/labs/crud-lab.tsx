@@ -1,11 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { SimulationCanvas, useLabSimulation } from "./simulation-canvas";
+import { SimulationCanvas } from "./simulation-canvas";
+import { createSimulationStore } from "@/stores/simulation-store";
+import { createLabRun } from "./create-lab-run";
 import { StatusCode } from "@/components/simulation/status-code";
 import type { CrudLabConfig, DatabaseRecord } from "@/types/lab";
 import type { Lesson } from "@/types/lesson";
 import type { UserRole } from "@/types/permission";
+import type { HttpMethod } from "@/types/simulation";
 
 type Operation = "create" | "read" | "update" | "delete";
 
@@ -17,7 +20,7 @@ const operationCopy: Record<Operation, { verb: string; http: string; sql: string
 };
 
 export function CrudLab({ lesson, config, onInteraction }: { lesson: Lesson; config: CrudLabConfig; onInteraction: () => void }) {
-  const store = useLabSimulation(lesson.simulation);
+  const [store, setStore] = useState(() => createSimulationStore(lesson.simulation));
   const [records, setRecords] = useState<DatabaseRecord[]>(config.initialRecords);
   const [selectedId, setSelectedId] = useState<number | null>(config.initialRecords[0]?.id ?? null);
   const [name, setName] = useState("Ibrahim");
@@ -26,56 +29,75 @@ export function CrudLab({ lesson, config, onInteraction }: { lesson: Lesson; con
 
   const selected = records.find((record) => record.id === selectedId) ?? null;
 
-  function runSimulation(failure: "invalid-request" | "missing-route" | null) {
-    store.getState().restart();
-    store.getState().triggerFailure(failure);
-    store.getState().play();
+  function runSimulation(operation: Operation, status: 200 | 201 | 400 | 404, message: string, result: unknown, requestBody?: unknown, recordId = selectedId) {
+    const method = operationCopy[operation].http.split(" ")[0] as HttpMethod;
+    setStore(createLabRun({
+      definition: lesson.simulation,
+      speed: store.getState().speed,
+      failure: status === 400 ? "invalid-request" : status === 404 ? "missing-route" : null,
+      request: { method, path: operation === "create" ? "/api/users" : `/api/users/${recordId ?? ":id"}`, body: requestBody ? JSON.stringify(requestBody, null, 2) : undefined },
+      response: { statusCode: status, body: JSON.stringify(result, null, 2) },
+      mapStep: (step) => step.id === "database-query" ? {
+        ...step, title: `${operationCopy[operation].sql} users`, description: message, payload: undefined, inspectable: false,
+      } : step,
+    }));
+    setOutcome({ status, message });
     onInteraction();
   }
 
-  function apply(operation: Operation) {
+  function apply(operation: Operation, recordName = name) {
     if (operation === "create") {
-      if (!name.trim()) {
-        setOutcome({ status: 400, message: "Name is required." });
-        runSimulation("invalid-request");
+      if (!recordName.trim()) {
+        runSimulation(operation, 400, "Name is required.", { error: "name is required" }, { name: recordName, role });
         return;
       }
       const nextId = records.reduce((highest, record) => Math.max(highest, record.id), 0) + 1;
-      setRecords([...records, { id: nextId, name: name.trim(), role }]);
+      const record = { id: nextId, name: recordName.trim(), role };
+      setRecords([...records, record]);
       setSelectedId(nextId);
-      setOutcome({ status: 201, message: `INSERT ${name.trim()} · ${records.length + 1} rows` });
-      runSimulation(null);
+      runSimulation(operation, 201, `INSERT ${recordName.trim()} · ${records.length + 1} rows`, record, { name: recordName.trim(), role });
       return;
     }
 
     if (!selected) {
-      setOutcome({ status: 404, message: "No record selected." });
-      runSimulation("missing-route");
+      runSimulation(operation, 404, "No record selected.", { error: "record not found" });
       return;
     }
 
     if (operation === "read") {
-      setOutcome({ status: 200, message: `SELECT ${selected.name} · no rows changed` });
+      runSimulation(operation, 200, `SELECT ${selected.name} · no rows changed`, selected);
     }
     if (operation === "update") {
       const nextRole: UserRole = selected.role === "student" ? "instructor" : "student";
       setRecords(records.map((record) => record.id === selected.id ? { ...record, role: nextRole } : record));
-      setOutcome({ status: 200, message: `UPDATE ${selected.name} · ${selected.role} → ${nextRole}` });
+      runSimulation(operation, 200, `UPDATE ${selected.name} · ${selected.role} → ${nextRole}`, { ...selected, role: nextRole }, { role: nextRole });
     }
     if (operation === "delete") {
       setRecords(records.filter((record) => record.id !== selected.id));
       setSelectedId(null);
-      setOutcome({ status: 200, message: `DELETE ${selected.name} · row removed` });
+      runSimulation(operation, 200, `DELETE ${selected.name} · row removed`, { deleted: selected.id });
     }
-    runSimulation(null);
   }
 
   function reset() {
     setRecords(config.initialRecords);
     setSelectedId(config.initialRecords[0]?.id ?? null);
     setOutcome(null);
-    store.getState().restart();
+    setStore(createSimulationStore(lesson.simulation));
     onInteraction();
+  }
+
+  function retry() {
+    if (outcome?.status === 400) {
+      const validName = name.trim() || "Ibrahim";
+      setName(validName);
+      apply("create", validName);
+      return;
+    }
+    const record = records[0] ?? config.initialRecords[0];
+    if (!records.length) setRecords(config.initialRecords);
+    setSelectedId(record.id);
+    runSimulation("read", 200, `SELECT ${record.name} · no rows changed`, record, undefined, record.id);
   }
 
   return (
@@ -93,7 +115,7 @@ export function CrudLab({ lesson, config, onInteraction }: { lesson: Lesson; con
                   <td>{record.name}</td>
                   <td>{record.role}</td>
                   <td>
-                    <button type="button" aria-pressed={record.id === selectedId} onClick={() => { setSelectedId(record.id); onInteraction(); }}>
+                    <button type="button" aria-label={`Select ${record.name}, record ${record.id}`} aria-pressed={record.id === selectedId} onClick={() => { setSelectedId(record.id); onInteraction(); }}>
                       {record.id === selectedId ? "Selected" : "Select"}
                     </button>
                   </td>
@@ -127,13 +149,17 @@ export function CrudLab({ lesson, config, onInteraction }: { lesson: Lesson; con
       </div>
 
       {outcome ? (
-        <div className="http-outcome">
+        <div className="http-outcome" role="status">
           <StatusCode code={outcome.status} />
           <p>{outcome.message}</p>
         </div>
       ) : null}
 
-      <SimulationCanvas store={store} nodes={lesson.visualNodes} label={lesson.title} onInteraction={onInteraction} />
+      <SimulationCanvas
+        store={store} nodes={lesson.visualNodes} label={lesson.title} onInteraction={onInteraction}
+        onRunWorkingVersion={retry}
+        onTriggerFailure={() => { setName(""); apply("create", ""); }}
+      />
     </div>
   );
 }

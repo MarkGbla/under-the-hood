@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent } from "react";
 import { NodeIcon } from "@/components/simulation/node-icon";
 import { Packet } from "@/components/simulation/packet";
 import { StatusCode } from "@/components/simulation/status-code";
@@ -19,6 +19,7 @@ import {
   type BuilderNode,
   type BuilderResult,
 } from "@/playground/system-builder";
+import { isTypingTarget } from "@/hooks/use-presentation-mode";
 import type { SystemNodeState } from "@/types/simulation";
 
 type RunStatus = "idle" | "running" | "paused" | "success" | "failed";
@@ -34,8 +35,10 @@ type DragState = {
   moved: boolean;
 };
 
-const CANVAS_WIDTH = 1280;
-const CANVAS_HEIGHT = 540;
+const MIN_CANVAS_WIDTH = 1280;
+const MIN_CANVAS_HEIGHT = 540;
+/** Always keep open space beyond the furthest component so a drag never hits a wall. */
+const CANVAS_HEADROOM = 420;
 const NODE_WIDTH = 150;
 const NODE_HEIGHT = 116;
 
@@ -57,7 +60,7 @@ function terminalIndex(result: BuilderResult) {
 
 function arrangeNodes(nodes: readonly BuilderNode[]): CanvasNode[] {
   const columns = Math.min(6, Math.max(1, nodes.length));
-  const gap = columns > 1 ? Math.min(200, (CANVAS_WIDTH - 220) / (columns - 1)) : 0;
+  const gap = columns > 1 ? Math.min(200, (MIN_CANVAS_WIDTH - 220) / (columns - 1)) : 0;
   return nodes.map((node, index) => ({
     ...node,
     x: Math.round(70 + (index % 6) * gap),
@@ -78,6 +81,11 @@ function clamp(value: number, minimum: number, maximum: number) {
 
 export function SystemBuilder() {
   const dragState = useRef<DragState | null>(null);
+  const justDragged = useRef(false);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const panState = useRef<{ x: number; y: number; left: number; top: number; moved: boolean } | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const [connectDrag, setConnectDrag] = useState<{ sourceId: string; x: number; y: number; overId: string | null } | null>(null);
   const [tool, setTool] = useState<CanvasTool>("select");
   const missionId: BuilderMissionId = "login";
   const [nodes, setNodes] = useState<CanvasNode[]>(INITIAL_STARTER.nodes);
@@ -103,6 +111,10 @@ export function SystemBuilder() {
     [connections, missionId, nodes],
   );
   const designIssues = inspection.issues;
+  const canvasSize = useMemo(() => ({
+    width: Math.max(MIN_CANVAS_WIDTH, ...nodes.map((node) => node.x + NODE_WIDTH + CANVAS_HEADROOM)),
+    height: Math.max(MIN_CANVAS_HEIGHT, ...nodes.map((node) => node.y + NODE_HEIGHT + CANVAS_HEADROOM)),
+  }), [nodes]);
   const filteredComponents = useMemo(() => {
     const query = componentSearch.trim().toLowerCase();
     return builderComponents.filter((component) => (
@@ -130,6 +142,135 @@ export function SystemBuilder() {
   }, [currentStep, result, runStatus]);
 
   useEffect(() => {
+    if (!connectDrag) return;
+    const sourceId = connectDrag.sourceId;
+
+    function handleMove(event: globalThis.PointerEvent) {
+      const point = canvasPoint(event.clientX, event.clientY);
+      const hovered = nodeIdAtPoint(event.clientX, event.clientY);
+      setConnectDrag((current) => current && ({
+        ...current,
+        x: point.x,
+        y: point.y,
+        overId: hovered && hovered !== sourceId ? hovered : null,
+      }));
+    }
+
+    function handleUp(event: globalThis.PointerEvent) {
+      const target = nodeIdAtPoint(event.clientX, event.clientY);
+      setConnectDrag(null);
+      if (target && target !== sourceId) {
+        connectNodes(sourceId, target);
+      }
+      // Released on empty space: keep the source armed so a following click on
+      // a component still completes the connection.
+    }
+
+    function handleCancel(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setConnectDrag(null);
+      setConnectionSourceId(null);
+    }
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("keydown", handleCancel);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("keydown", handleCancel);
+    };
+    // Re-binding on every pointermove (connectDrag.x/y changes constantly)
+    // would detach the listeners mid-gesture, so the drag is keyed to its source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectDrag?.sourceId, zoom]);
+
+  useEffect(() => {
+    function handle(event: KeyboardEvent) {
+      if (isTypingTarget(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+      const step = event.shiftKey ? 40 : 8;
+      const moves: Record<string, [number, number]> = {
+        ArrowLeft: [-step, 0],
+        ArrowRight: [step, 0],
+        ArrowUp: [0, -step],
+        ArrowDown: [0, step],
+      };
+
+      if (moves[event.key]) {
+        if (!selectedNodeId) return;
+        event.preventDefault();
+        nudgeSelected(...moves[event.key]);
+        return;
+      }
+
+      switch (event.key) {
+        case "Delete":
+        case "Backspace":
+          if (!selectedNodeId && !selectedConnectionId) return;
+          event.preventDefault();
+          deleteSelection();
+          return;
+        case "Escape":
+          event.preventDefault();
+          setConnectDrag(null);
+          setConnectionSourceId(null);
+          setSelectedConnectionId(null);
+          setTool("select");
+          return;
+        case "v":
+        case "V":
+          event.preventDefault();
+          setTool("select");
+          setConnectionSourceId(null);
+          return;
+        case "c":
+        case "C":
+          event.preventDefault();
+          setTool("connect");
+          setConnectionSourceId(null);
+          return;
+        case "t":
+        case "T":
+          event.preventDefault();
+          testSystem();
+          return;
+        case "a":
+        case "A":
+          event.preventDefault();
+          autoArrange();
+          return;
+        case "f":
+        case "F":
+          event.preventDefault();
+          fitToContent();
+          return;
+        case "+":
+        case "=":
+          event.preventDefault();
+          setZoom((value) => clamp(Number((value + 0.1).toFixed(1)), 0.3, 1.2));
+          return;
+        case "-":
+        case "_":
+          event.preventDefault();
+          setZoom((value) => clamp(Number((value - 0.1).toFixed(1)), 0.3, 1.2));
+          return;
+        case "0":
+          event.preventDefault();
+          setZoom(0.9);
+          return;
+        default:
+      }
+    }
+
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+    // Re-binding on every node move would be wasteful; handlers read live state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNodeId, selectedConnectionId, nodes, connections, result, runStatus, currentStep, zoom]);
+
+  useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const timer = window.setTimeout(() => {
       if (window.matchMedia("(max-width: 760px)").matches) {
@@ -141,6 +282,18 @@ export function SystemBuilder() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  function canvasPoint(clientX: number, clientY: number) {
+    const surface = surfaceRef.current;
+    if (!surface) return { x: 0, y: 0 };
+    const bounds = surface.getBoundingClientRect();
+    return { x: (clientX - bounds.left) / zoom, y: (clientY - bounds.top) / zoom };
+  }
+
+  function nodeIdAtPoint(clientX: number, clientY: number) {
+    const element = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    return element?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId ?? null;
+  }
 
   function invalidateRun() {
     setResult(null);
@@ -194,8 +347,8 @@ export function SystemBuilder() {
       id: `${kind}-${nextNodeId}`,
       kind,
       working: true,
-      x: clamp(position.x, 16, CANVAS_WIDTH - NODE_WIDTH - 16),
-      y: clamp(position.y, 16, CANVAS_HEIGHT - NODE_HEIGHT - 16),
+      x: Math.max(0, Math.round(position.x)),
+      y: Math.max(0, Math.round(position.y)),
     };
     setNextNodeId((value) => value + 1);
     setNodes((current) => [...current, node]);
@@ -239,14 +392,15 @@ export function SystemBuilder() {
 
   function connectNodes(sourceNodeId: string, targetNodeId: string) {
     if (sourceNodeId === targetNodeId) return;
-    const existing = connections.some((connection) => connection.sourceNodeId === sourceNodeId && connection.targetNodeId === targetNodeId);
-    if (!existing) {
-      setConnections((current) => [...current, {
+    setConnections((current) => {
+      const existing = current.some((connection) => connection.sourceNodeId === sourceNodeId && connection.targetNodeId === targetNodeId);
+      if (existing) return current;
+      return [...current, {
         id: `connection-${sourceNodeId}-${targetNodeId}-${current.length + 1}`,
         sourceNodeId,
         targetNodeId,
-      }]);
-    }
+      }];
+    });
     setConnectionSourceId(null);
     setSelectedConnectionId(null);
     setTool("select");
@@ -254,6 +408,10 @@ export function SystemBuilder() {
   }
 
   function activateNode(nodeId: string) {
+    if (justDragged.current) {
+      justDragged.current = false;
+      return;
+    }
     if (tool === "connect") {
       if (!connectionSourceId) {
         setConnectionSourceId(nodeId);
@@ -285,7 +443,31 @@ export function SystemBuilder() {
       startY: node.y,
       moved: false,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // Pointer capture is an enhancement: it keeps the drag alive when the
+    // cursor leaves the node. It throws for an unknown pointerId and is absent
+    // in some environments, so a failure here must not abort the drag.
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Drag still works through the element's own pointermove events.
+    }
+  }
+
+  /** Scroll the viewport when a drag reaches its edge, so the surface keeps opening up. */
+  function autoScrollViewport(clientX: number, clientY: number) {
+    const viewport = canvasRef.current;
+    if (!viewport) return;
+    const bounds = viewport.getBoundingClientRect();
+    const margin = 72;
+    const speed = 22;
+    let deltaX = 0;
+    let deltaY = 0;
+    if (clientX < bounds.left + margin) deltaX = -speed;
+    else if (clientX > bounds.right - margin) deltaX = speed;
+    if (clientY < bounds.top + margin) deltaY = -speed;
+    else if (clientY > bounds.bottom - margin) deltaY = speed;
+    if (deltaX !== 0) viewport.scrollLeft += deltaX;
+    if (deltaY !== 0) viewport.scrollTop += deltaY;
   }
 
   function handleNodePointerMove(event: PointerEvent<HTMLButtonElement>) {
@@ -298,23 +480,29 @@ export function SystemBuilder() {
       invalidateRun();
     }
     if (!dragging.moved) return;
+    autoScrollViewport(event.clientX, event.clientY);
     setNodes((current) => current.map((node) => node.id === dragging.nodeId ? {
       ...node,
-      x: clamp(dragging.startX + deltaX, 16, CANVAS_WIDTH - NODE_WIDTH - 16),
-      y: clamp(dragging.startY + deltaY, 16, CANVAS_HEIGHT - NODE_HEIGHT - 16),
+      x: Math.max(0, Math.round(dragging.startX + deltaX)),
+      y: Math.max(0, Math.round(dragging.startY + deltaY)),
     } : node));
   }
 
   function handleNodePointerUp(event: PointerEvent<HTMLButtonElement>) {
-    if (dragState.current?.nodeId === event.currentTarget.dataset.nodeId) dragState.current = null;
+    const dragging = dragState.current;
+    if (!dragging || dragging.nodeId !== event.currentTarget.dataset.nodeId) return;
+    // A drag must not also register as a click, or dropping a node re-triggers
+    // selection (and, in connect mode, would wire up an unintended connector).
+    justDragged.current = dragging.moved;
+    dragState.current = null;
   }
 
   function nudgeSelected(deltaX: number, deltaY: number) {
     if (!selectedNodeId) return;
     setNodes((current) => current.map((node) => node.id === selectedNodeId ? {
       ...node,
-      x: clamp(node.x + deltaX, 16, CANVAS_WIDTH - NODE_WIDTH - 16),
-      y: clamp(node.y + deltaY, 16, CANVAS_HEIGHT - NODE_HEIGHT - 16),
+      x: Math.max(0, node.x + deltaX),
+      y: Math.max(0, node.y + deltaY),
     } : node));
     invalidateRun();
   }
@@ -331,6 +519,105 @@ export function SystemBuilder() {
 
   function clearCanvas() {
     replaceGraph([], []);
+  }
+
+  function startConnectDrag(event: PointerEvent<HTMLButtonElement>, nodeId: string) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = canvasPoint(event.clientX, event.clientY);
+    setConnectDrag({ sourceId: nodeId, x: point.x, y: point.y, overId: null });
+    setConnectionSourceId(nodeId);
+    setSelectedNodeId(nodeId);
+    setSelectedConnectionId(null);
+  }
+
+  function handleCanvasPointerDown(event: PointerEvent<HTMLDivElement>) {
+    // Only empty canvas starts a pan; pointerdown on a node must still drag it.
+    if (event.target !== event.currentTarget || event.button !== 0) return;
+    const viewport = canvasRef.current;
+    if (!viewport) return;
+    panState.current = {
+      x: event.clientX,
+      y: event.clientY,
+      left: viewport.scrollLeft,
+      top: viewport.scrollTop,
+      moved: false,
+    };
+  }
+
+  function handleCanvasPointerMove(event: PointerEvent<HTMLDivElement>) {
+    const panning = panState.current;
+    const viewport = canvasRef.current;
+    if (!panning || !viewport) return;
+    const deltaX = event.clientX - panning.x;
+    const deltaY = event.clientY - panning.y;
+    if (!panning.moved && Math.abs(deltaX) + Math.abs(deltaY) < 4) return;
+    panning.moved = true;
+    viewport.scrollLeft = panning.left - deltaX;
+    viewport.scrollTop = panning.top - deltaY;
+  }
+
+  function handleCanvasPointerUp() {
+    panState.current = null;
+  }
+
+  /** Zoom and scroll so every component is visible at once. */
+  function fitToContent() {
+    const viewport = canvasRef.current;
+    if (!viewport || nodes.length === 0) {
+      setZoom(0.9);
+      return;
+    }
+    const right = Math.max(...nodes.map((node) => node.x + NODE_WIDTH));
+    const bottom = Math.max(...nodes.map((node) => node.y + NODE_HEIGHT));
+    const left = Math.min(...nodes.map((node) => node.x));
+    const top = Math.min(...nodes.map((node) => node.y));
+    const padding = 80;
+    const nextZoom = clamp(
+      Number(Math.min(
+        viewport.clientWidth / (right - left + padding * 2),
+        viewport.clientHeight / (bottom - top + padding * 2),
+      ).toFixed(2)),
+      0.3,
+      1.2,
+    );
+    setZoom(nextZoom);
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = Math.max(0, (left - padding) * nextZoom);
+      viewport.scrollTop = Math.max(0, (top - padding) * nextZoom);
+    });
+  }
+
+  /** Arrow keys nudge, Shift+arrows move further, Delete removes, Escape cancels. */
+  function handleCanvasKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
+
+    const step = event.shiftKey ? 40 : 8;
+    const moves: Record<string, [number, number]> = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    };
+
+    if (moves[event.key] && selectedNodeId) {
+      event.preventDefault();
+      nudgeSelected(...moves[event.key]);
+      return;
+    }
+    if ((event.key === "Delete" || event.key === "Backspace") && (selectedNodeId || selectedConnectionId)) {
+      event.preventDefault();
+      deleteSelection();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setConnectionSourceId(null);
+      setSelectedConnectionId(null);
+      setTool("select");
+    }
   }
 
   function testSystem() {
@@ -500,23 +787,50 @@ export function SystemBuilder() {
             <Packet kind={packetKind} method={mission.method} path={mission.path} statusCode={result?.statusCode} state={runStatus === "running" ? "travelling" : runStatus === "paused" ? "paused" : runStatus === "success" ? "success" : runStatus === "failed" ? "error" : "idle"} compact />
           </div>
 
-          <div className="builder-canvas-viewport">
-            <div className={`builder-canvas-scale${nodes.length === 0 ? " builder-canvas-scale-empty" : ""}`} style={{ width: CANVAS_WIDTH * zoom, height: CANVAS_HEIGHT * zoom }}>
+          {/* The canvas is a focusable region so the whole editor is reachable
+              without a mouse: Tab in, arrows nudge, Delete removes, Esc cancels. */}
+          <div
+            className="builder-canvas-viewport"
+            ref={canvasRef}
+            role="application"
+            aria-label="System canvas. Arrow keys move the selected component, Delete removes the selection, Escape cancels a connector."
+            tabIndex={0}
+            onKeyDown={handleCanvasKeyDown}
+          >
+            <div className={`builder-canvas-scale${nodes.length === 0 ? " builder-canvas-scale-empty" : ""}`} style={{ width: canvasSize.width * zoom, height: canvasSize.height * zoom }}>
               <div
-                className={`builder-canvas editor-canvas builder-tool-${tool}`}
+                ref={surfaceRef}
+                className={`builder-canvas editor-canvas builder-tool-${tool}${connectDrag ? " builder-canvas-connecting" : ""}`}
                 aria-label={`System canvas with ${nodes.length} components and ${connections.length} connectors`}
-                style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT, transform: `scale(${zoom})` }}
+                style={{ width: canvasSize.width, height: canvasSize.height, transform: `scale(${zoom})` }}
                 onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }}
                 onDrop={handleCanvasDrop}
+                onPointerDown={handleCanvasPointerDown}
+                onPointerMove={handleCanvasPointerMove}
+                onPointerUp={handleCanvasPointerUp}
+                onPointerLeave={handleCanvasPointerUp}
                 onClick={(event) => {
+                  if (panState.current?.moved) return;
                   if (event.target === event.currentTarget) {
                     setSelectedNodeId(null);
                     setSelectedConnectionId(null);
                   }
                 }}
               >
-                <svg className="builder-connection-layer" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} aria-label="System connectors">
-                  <defs><marker id="builder-arrow-default" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" /></marker></defs>
+                <svg className="builder-connection-layer" viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`} aria-label="System connectors">
+                  <defs>
+                    <marker
+                      id="builder-arrow-default"
+                      markerUnits="userSpaceOnUse"
+                      markerWidth="11"
+                      markerHeight="11"
+                      refX="10"
+                      refY="5.5"
+                      orient="auto"
+                    >
+                      <path className="builder-arrow-head" d="M0,0 L11,5.5 L0,11 Z" />
+                    </marker>
+                  </defs>
                   {connections.map((connection) => {
                     const source = nodes.find((node) => node.id === connection.sourceNodeId);
                     const target = nodes.find((node) => node.id === connection.targetNodeId);
@@ -549,9 +863,28 @@ export function SystemBuilder() {
                       </g>
                     );
                   })}
+                  {connectDrag ? (() => {
+                    const source = nodes.find((node) => node.id === connectDrag.sourceId);
+                    if (!source) return null;
+                    const startX = source.x + NODE_WIDTH;
+                    const startY = source.y + NODE_HEIGHT / 2;
+                    const bend = Math.max(40, Math.abs(connectDrag.x - startX) * 0.45);
+                    return (
+                      <path
+                        className={`builder-connection-preview${connectDrag.overId ? " builder-connection-preview-valid" : ""}`}
+                        d={`M ${startX} ${startY} C ${startX + bend} ${startY}, ${connectDrag.x - bend} ${connectDrag.y}, ${connectDrag.x} ${connectDrag.y}`}
+                        markerEnd="url(#builder-arrow-default)"
+                      />
+                    );
+                  })() : null}
                 </svg>
                 {nodes.map((node) => (
-                  <div className={`builder-node graph-node ${node.id === selectedNodeId ? "builder-node-selected" : ""} ${node.id === connectionSourceId ? "builder-node-connection-source" : ""}`} key={node.id} style={{ left: node.x, top: node.y, width: NODE_WIDTH }}>
+                  <div
+                    className={`builder-node graph-node ${node.id === selectedNodeId ? "builder-node-selected" : ""} ${node.id === connectionSourceId ? "builder-node-connection-source" : ""} ${connectDrag && connectDrag.overId === node.id ? "builder-node-drop-target" : ""} ${connectDrag && connectDrag.sourceId !== node.id ? "builder-node-connectable" : ""}`}
+                    key={node.id}
+                    data-node-id={node.id}
+                    style={{ left: node.x, top: node.y, width: NODE_WIDTH }}
+                  >
                     <button
                       className="builder-node-select"
                       type="button"
@@ -565,7 +898,13 @@ export function SystemBuilder() {
                     >
                       <SystemNode kind={node.kind} label={getBuilderComponent(node.kind).name} detail={node.working ? getBuilderComponent(node.kind).workingLabel : getBuilderComponent(node.kind).brokenLabel} state={nodeState(node)} compact />
                     </button>
-                    <button className="builder-node-port" type="button" aria-label={`Start connector from ${getBuilderComponent(node.kind).name}`} onClick={() => startConnection(node.id)}><span aria-hidden="true">＋</span></button>
+                    <button
+                      className="builder-node-port"
+                      type="button"
+                      aria-label={`Drag from here to connect ${getBuilderComponent(node.kind).name} to another component`}
+                      onPointerDown={(event) => startConnectDrag(event, node.id)}
+                      onClick={() => startConnection(node.id)}
+                    ><span aria-hidden="true">→</span></button>
                   </div>
                 ))}
               </div>
@@ -582,11 +921,24 @@ export function SystemBuilder() {
 
           <div className="builder-canvas-statusbar">
             <span>{nodes.length} components · {connections.length} connectors</span>
-            <strong>{tool === "connect" ? connectionSourceId ? "Select a target component" : "Select a starting component" : "Drag components to move them"}</strong>
+            <strong>{tool === "connect" ? connectionSourceId ? "Select a target component" : "Select a starting component" : "Drag to move · drag empty space to pan · arrows nudge"}</strong>
+            <div className="builder-status-actions">
+            <details className="builder-key-help">
+              <summary>Keys</summary>
+              <ul>
+                <li><kbd>V</kbd> select <kbd>C</kbd> connect</li>
+                <li><kbd>T</kbd> test <kbd>A</kbd> arrange <kbd>F</kbd> fit</li>
+                <li><kbd>←↑↓→</kbd> nudge · <kbd>Shift</kbd> further</li>
+                <li><kbd>Delete</kbd> remove <kbd>Esc</kbd> cancel</li>
+                <li><kbd>+</kbd><kbd>−</kbd> zoom <kbd>0</kbd> reset</li>
+              </ul>
+            </details>
             <div aria-label="Canvas zoom controls">
-              <button type="button" aria-label="Zoom out" onClick={() => setZoom((value) => clamp(Number((value - 0.1).toFixed(1)), 0.6, 1.2))}>−</button>
+              <button type="button" aria-label="Zoom out" onClick={() => setZoom((value) => clamp(Number((value - 0.1).toFixed(1)), 0.3, 1.2))}>−</button>
               <button type="button" aria-label="Reset zoom" onClick={() => setZoom(0.9)}>{Math.round(zoom * 100)}%</button>
-              <button type="button" aria-label="Zoom in" onClick={() => setZoom((value) => clamp(Number((value + 0.1).toFixed(1)), 0.6, 1.2))}>＋</button>
+              <button type="button" onClick={fitToContent}>Fit</button>
+              <button type="button" aria-label="Zoom in" onClick={() => setZoom((value) => clamp(Number((value + 0.1).toFixed(1)), 0.3, 1.2))}>＋</button>
+            </div>
             </div>
           </div>
           {timelineOpen ? <ol id="builder-timeline" className="builder-trace editor-trace" aria-label="Request execution timeline">

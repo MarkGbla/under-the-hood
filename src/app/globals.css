@@ -4317,9 +4317,11 @@ a {
 
 .builder-canvas {
   min-height: 286px;
-  display: grid;
-  align-items: center;
-  overflow-x: auto;
+  display: block;
+  position: relative;
+  /* The surface grows with the diagram; the viewport scrolls it. */
+  overflow: visible;
+  cursor: grab;
   margin: 14px 16px;
   padding: 34px 24px 26px;
   border: 1px solid var(--line-strong);
@@ -5293,8 +5295,9 @@ a {
 }
 
 .builder-canvas-viewport {
-  height: 494px;
+  height: clamp(494px, 66vh, 900px);
   overflow: auto;
+  overscroll-behavior: contain;
   margin: 0 12px;
   border: 1px solid var(--line-strong);
   background: #dfe2df;
@@ -5306,6 +5309,11 @@ a {
   position: relative;
   margin: 24px;
 }
+
+.builder-canvas:active { cursor: grabbing; }
+.builder-node, .builder-node-select { cursor: default; }
+.builder-tool-connect .builder-canvas,
+.builder-tool-connect .builder-node-select { cursor: crosshair; }
 
 .editor-canvas {
   position: relative;
@@ -5343,6 +5351,13 @@ a {
   stroke-width: 2;
   pointer-events: none;
   transition: stroke 150ms ease, stroke-width 150ms ease;
+}
+
+/* The arrowhead takes the colour of the line that references it, so a green
+   completed connector no longer ends in a black triangle. */
+.builder-arrow-head {
+  fill: context-stroke;
+  stroke: none;
 }
 
 .builder-connection-hitbox {
@@ -6356,4 +6371,376 @@ body:has(.playground-app) .nav-cta {
   .playground-app .editor-trace {
     max-height: 112px;
   }
+}
+
+/* The canvas takes focus for keyboard editing, so it needs a visible ring. */
+.builder-canvas-viewport:focus-visible {
+  outline: 3px solid #2d80cf;
+  outline-offset: -3px;
+  border-radius: 14px;
+}
+
+/* Keyboard hint sits with the other canvas status text. */
+.builder-canvas-statusbar .builder-keyboard-hint { color: var(--ink-soft); }
+
+/* Drag-to-connect */
+
+.builder-connection-preview {
+  fill: none;
+  stroke: #2d80cf;
+  stroke-width: 2.5;
+  stroke-dasharray: 7 5;
+  pointer-events: none;
+}
+
+.builder-connection-preview-valid {
+  stroke: var(--success);
+  stroke-dasharray: none;
+  stroke-width: 3;
+}
+
+/* The port is a grab handle, so make it a real target and show it on approach. */
+.builder-node-port {
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease, background 120ms ease;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.builder-node:hover .builder-node-port,
+.builder-node:focus-within .builder-node-port,
+.builder-node-selected .builder-node-port,
+.builder-node-connection-source .builder-node-port {
+  opacity: 1;
+}
+
+.builder-node-port:hover { transform: scale(1.18); }
+
+/* While dragging a connector, show what can receive it. */
+.builder-canvas-connecting .builder-node-connectable .system-node {
+  outline: 2px dashed rgba(45, 128, 207, 0.55);
+  outline-offset: 3px;
+}
+
+.builder-canvas-connecting .builder-node-drop-target .system-node {
+  outline: 3px solid var(--success);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px rgba(22, 128, 96, 0.14);
+}
+
+.builder-canvas-connecting,
+.builder-canvas-connecting .builder-node-select { cursor: crosshair; }
+
+/* A connector drag must win over the node's own drag gesture. */
+.builder-canvas-connecting .builder-node-select { pointer-events: none; }
+.builder-canvas-connecting .builder-node { pointer-events: auto; }
+
+
+/* Keyboard shortcut legends */
+
+kbd {
+  display: inline-block;
+  min-width: 15px;
+  padding: 1px 4px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--ink);
+}
+
+.key-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 8px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.builder-key-help { position: relative; font-size: 11px; }
+
+.builder-key-help summary {
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font-weight: 620;
+  cursor: pointer;
+  list-style: none;
+}
+
+.builder-key-help summary::-webkit-details-marker { display: none; }
+
+.builder-key-help ul {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  list-style: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 1040px) {
+  .key-legend { display: none; }
+}
+
+/* Keys + zoom share the status bar's trailing cell. */
+.builder-status-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Explore: a clear entry point and an honest view of local progress. */
+.explore-page .explore-hero {
+  padding: 58px 0 38px;
+}
+
+.explore-page .explore-heading h1 {
+  margin: 20px 0 18px;
+  font-size: clamp(42px, 5.8vw, 72px);
+  line-height: 1.04;
+}
+
+.explore-intro {
+  max-width: 650px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 17px;
+  line-height: 1.65;
+}
+
+.explore-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin-top: 24px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.explore-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.explore-facts span::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--success);
+  content: "";
+}
+
+.explore-page .explore-content {
+  padding-top: 30px;
+  padding-bottom: 70px;
+}
+
+.learning-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 32px;
+  align-items: center;
+  margin-bottom: 44px;
+  padding: 24px 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.learning-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.learning-suggestion-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #c0d876;
+  border-radius: 14px;
+  background: var(--lime-soft);
+  font-size: 26px;
+}
+
+.learning-suggestion h2 {
+  margin: 8px 0;
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  line-height: 1.25;
+}
+
+.learning-start-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  font-size: 13px;
+  font-weight: 650;
+  text-underline-offset: 4px;
+}
+
+.learning-start-link:hover { text-decoration: underline; }
+
+.learning-progress {
+  padding-left: 28px;
+  border-left: 1px solid var(--line);
+}
+
+.learning-progress-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.learning-progress-label strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 20px;
+  font-weight: 550;
+}
+
+.learning-progress-label strong span { color: var(--ink-soft); font-size: 13px; }
+
+.learning-progress progress {
+  display: block;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 20px;
+  background: var(--paper-deep);
+  accent-color: var(--success);
+}
+
+.learning-progress progress::-webkit-progress-bar { border-radius: 20px; background: var(--paper-deep); }
+.learning-progress progress::-webkit-progress-value { border-radius: 20px; background: var(--success); }
+.learning-progress progress::-moz-progress-bar { border-radius: 20px; background: var(--success); }
+.learning-progress p { margin: 10px 0 0; color: var(--ink-soft); font-size: 11px; }
+
+.explore-section-heading { margin-bottom: 22px; }
+.explore-section-heading h2 { margin: 0 0 7px; font-size: 23px; font-weight: 650; letter-spacing: -0.035em; }
+.explore-section-heading p { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.6; }
+.explore-page .lesson-card { min-height: 350px; }
+.explore-page .lesson-card-topline { margin-bottom: 28px; gap: 12px; }
+.explore-page .lesson-index { font-size: 10px; }
+.lesson-status-completed { background: var(--teal-soft); color: #126b51; }
+.lesson-status-in-progress { background: var(--amber-soft); color: #825113; }
+.explore-further { margin-top: 46px; }
+.explore-further-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+
+.explore-extra {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  padding: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: var(--surface);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.explore-extra:hover { border-color: var(--ink); box-shadow: var(--shadow-sm); }
+.explore-extra-login { background: var(--blue-soft); }
+.explore-extra-playground { background: var(--lime-soft); }
+.explore-extra h3 { margin: 20px 0 10px; font-size: 26px; font-weight: 650; letter-spacing: -0.04em; line-height: 1.15; }
+.explore-extra p { max-width: 410px; margin: 0 0 25px; color: var(--ink-soft); font-size: 14px; line-height: 1.6; }
+.explore-extra-action { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 16px; margin-top: auto; font-size: 13px; font-weight: 650; }
+.explore-extra-action > span { font-size: 23px; }
+
+/* Navigation remains available on narrow screens, including the playground. */
+.site-menu-toggle { display: none; }
+.site-header .main-nav > a[aria-current="page"]:not(.nav-cta) { color: var(--ink); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 7px; }
+
+@media (max-width: 760px) {
+  .site-header .brand span { display: inline; }
+  .site-header .brand { gap: 9px; font-size: 14px; }
+  .site-header .header-inner { gap: 12px; }
+
+  .site-menu-toggle {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .site-menu-toggle span { font-size: 18px; }
+  .site-header .main-nav { display: none; }
+
+  .site-header .main-nav.is-open {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 12px 16px 16px;
+    border-bottom: 1px solid var(--line-strong);
+    background: var(--paper);
+    box-shadow: 0 16px 24px rgba(16, 45, 46, 0.1);
+  }
+
+  body .site-header .main-nav.is-open > a { display: flex; min-height: 46px; align-items: center; padding: 10px 14px; border-radius: 9px; font-size: 14px; }
+  .site-header .main-nav > a[aria-current="page"]:not(.nav-cta) { background: var(--paper-deep); text-decoration: none; }
+  .explore-page .explore-hero { padding: 36px 0 28px; }
+  .explore-page .explore-heading h1 { margin-top: 18px; }
+  .explore-intro { font-size: 15px; }
+  .explore-facts { gap: 10px 16px; font-size: 11px; }
+  .learning-overview { grid-template-columns: 1fr; gap: 22px; padding: 22px; margin-bottom: 34px; }
+  .learning-suggestion { align-items: start; gap: 14px; }
+  .learning-suggestion-icon { width: 38px; height: 38px; border-radius: 11px; font-size: 22px; }
+  .learning-suggestion h2 { font-size: 19px; }
+  .learning-suggestion .kicker { font-size: 10px; line-height: 1.4; }
+  .learning-progress { padding: 18px 0 0; border-left: 0; border-top: 1px solid var(--line); }
+  .learning-start-link { min-height: 40px; }
+  .explore-page .lesson-card { min-height: 325px; }
+  .explore-further-grid { grid-template-columns: 1fr; }
+  .explore-extra { padding: 25px; }
+}
+
+/* The guided-tour choice uses a native modal dialog for focus management. */
+.guide-choice-backdrop {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  color: inherit;
 }

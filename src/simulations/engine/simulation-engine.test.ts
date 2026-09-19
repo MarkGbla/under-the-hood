@@ -43,6 +43,49 @@ describe("deterministic simulation store", () => {
     expect(store.getState().status).toBe("completed");
   });
 
+  it("ignores delayed playback ticks after pause or restart", () => {
+    const store = createSimulationStore(loginSimulationDefinition);
+    store.getState().play();
+    store.getState().pause();
+    const paused = store.getState();
+    store.getState().tick();
+    expect(store.getState()).toBe(paused);
+
+    store.getState().play();
+    store.getState().restart();
+    const restarted = store.getState();
+    store.getState().tick();
+    expect(store.getState()).toBe(restarted);
+  });
+
+  it("keeps the inspector open when a pending playback tick arrives", () => {
+    const store = createSimulationStore(loginSimulationDefinition);
+    store.getState().play();
+    store.getState().inspectCurrent();
+    store.getState().tick();
+    expect(store.getState()).toMatchObject({
+      currentStepIndex: 0,
+      status: "paused",
+      inspectedStepId: "request-created",
+    });
+
+    store.getState().closeInspector();
+    store.getState().play();
+    store.getState().tick();
+    expect(store.getState().currentStepIndex).toBe(1);
+  });
+
+  it("waits for the learner to resume after a teaching pause", () => {
+    const store = createSimulationStore(loginSimulationDefinition);
+    store.getState().play();
+    store.getState().tick();
+    expect(store.getState()).toMatchObject({ status: "paused", currentStepIndex: 1 });
+    store.getState().tick();
+    expect(store.getState()).toMatchObject({ status: "paused", currentStepIndex: 1 });
+    store.getState().next();
+    expect(store.getState().currentStepIndex).toBe(2);
+  });
+
   it("produces the same wrong-password stop and 401 result every time", () => {
     const outcomes = Array.from({ length: 3 }, () => {
       const store = createSimulationStore(loginSimulationDefinition);

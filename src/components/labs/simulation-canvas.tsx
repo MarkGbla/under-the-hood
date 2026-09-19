@@ -7,7 +7,7 @@ import { HttpInspector } from "@/components/simulation/http-inspector";
 import { StatusCode } from "@/components/simulation/status-code";
 import { SystemNode } from "@/components/simulation/system-node";
 import { useSimulationPlayback } from "@/hooks/use-simulation-playback";
-import { usePresentationMode, usePresentationShortcuts } from "@/hooks/use-presentation-mode";
+import { usePresentationMode, useSimulationShortcuts } from "@/hooks/use-presentation-mode";
 import { useProgress } from "@/hooks/use-progress";
 import { createSimulationStore, type SimulationStoreApi } from "@/stores/simulation-store";
 import type { FailureType, SimulationDefinition, SimulationSpeed } from "@/simulations/engine/types";
@@ -37,9 +37,11 @@ type SimulationCanvasProps = {
   nodes: LessonVisualNode[];
   label: string;
   onInteraction?: () => void;
+  onRunWorkingVersion?: () => void;
+  onTriggerFailure?: () => void;
 };
 
-export function SimulationCanvas({ store, nodes, label, onInteraction }: SimulationCanvasProps) {
+export function SimulationCanvas({ store, nodes, label, onInteraction, onRunWorkingVersion, onTriggerFailure }: SimulationCanvasProps) {
   // Presentation state lives in the URL, so the canvas reads it directly rather
   // than having every lab drill it through.
   const { isPresenting, setPresenting } = usePresentationMode();
@@ -55,17 +57,19 @@ export function SimulationCanvas({ store, nodes, label, onInteraction }: Simulat
   useSimulationPlayback(store);
 
   const firstFailure = Object.keys(definition.failureRules)[0] as FailureType | undefined;
-  usePresentationShortcuts({
-    enabled: isPresenting,
+  useSimulationShortcuts({
+    presenting: isPresenting,
     store,
+    onInteraction,
     onExit: () => setPresenting(false),
-    onFailure: firstFailure
+    onFailure: onTriggerFailure ?? (firstFailure
       ? () => { store.getState().triggerFailure(firstFailure); store.getState().play(); }
-      : undefined,
+      : undefined),
   });
 
   const currentStep = definition.steps[currentStepIndex];
   const isTerminal = status === "completed" || status === "failed";
+  const responseStatus = definition.steps.findLast((step) => step.payload?.kind === "response")?.payload?.statusCode;
   const payload = currentStep.payload;
   const activityKind = failureResult
     ? "error"
@@ -123,6 +127,7 @@ export function SimulationCanvas({ store, nodes, label, onInteraction }: Simulat
           <span><strong>{definition.title}</strong><small>{statusLabels[status]} · Step {currentStepIndex + 1} of {definition.steps.length}</small></span>
         </div>
         <div className="workbench-controls" aria-label="Simulation playback controls">
+          <span className="key-legend" aria-hidden="true"><kbd>Space</kbd> play <kbd>←</kbd><kbd>→</kbd> step <kbd>R</kbd> restart</span>
           <button type="button" onClick={() => act(() => store.getState().restart())}>Restart</button>
           <button type="button" aria-label="Step backward" disabled={currentStepIndex === 0} onClick={() => act(() => store.getState().previous())}>◀</button>
           <button
@@ -206,13 +211,13 @@ export function SimulationCanvas({ store, nodes, label, onInteraction }: Simulat
               {/* The status code already carries the explanation; don't repeat it. */}
               <StatusCode code={failureResult.statusCode as 400 | 401 | 403 | 404 | 409 | 500} />
               <div className="retry-panel">
-                <button type="button" onClick={() => act(() => { store.getState().triggerFailure(null); store.getState().play(); })}>Run the working version</button>
+                <button type="button" onClick={() => act(onRunWorkingVersion ?? (() => { store.getState().triggerFailure(null); store.getState().play(); }))}>Run the working version</button>
               </div>
             </>
           ) : inspectedStepId && payload ? (
             <HttpInspector kind={payload.kind} headline={payload.headline} headers={payload.headers} body={payload.body} />
           ) : status === "completed" ? (
-            <StatusCode code={200} />
+            <StatusCode code={responseStatus ?? 200} />
           ) : (
             <div className="inspection-empty">
               <span aria-hidden="true">⌕</span>

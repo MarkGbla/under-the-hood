@@ -6,12 +6,14 @@ type LessonCardProps = {
 };
 
 export function LessonCard({ lesson }: LessonCardProps) {
+  const action = lesson.status === "completed" ? "Explore again" : lesson.status === "in-progress" ? "Continue lesson" : "Start lesson";
+
   return (
-    <Link className={`lesson-card accent-${lesson.accent}`} href={`/learn/${lesson.slug}`}>
+    <Link className={`lesson-card accent-${lesson.accent}`} href={`/learn/${lesson.slug}`} aria-label={`${action}: ${lesson.title}`}>
       <div className="lesson-card-topline">
-        <span className="lesson-index">{String(lesson.index).padStart(2, "0")}</span>
-        <span className="lesson-status">
-          {lesson.status === "completed" ? "Completed" : lesson.status === "in-progress" ? "Continue" : "Available"}
+        <span className="lesson-index">LESSON {String(lesson.index).padStart(2, "0")}</span>
+        <span className={`lesson-status lesson-status-${lesson.status}`}>
+          {lesson.status === "completed" ? "✓ Explored" : lesson.status === "in-progress" ? "In progress" : "Ready to explore"}
         </span>
       </div>
       <div>
@@ -25,7 +27,7 @@ export function LessonCard({ lesson }: LessonCardProps) {
         ))}
       </div>
       <div className="lesson-card-action">
-        <span>Open lesson</span>
+        <span>{action}</span>
         <span className="round-arrow" aria-hidden="true">→</span>
       </div>
     </Link>

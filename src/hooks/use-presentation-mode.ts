@@ -41,48 +41,77 @@ export function usePresentationMode() {
 }
 
 type ShortcutOptions = {
-  enabled: boolean;
+  /** Escape only means "leave presentation", so it is gated on that. */
+  presenting: boolean;
   store?: SimulationStoreApi;
   onExit: () => void;
   onFailure?: () => void;
+  onInteraction?: () => void;
 };
 
-/** Space play/pause, arrows step, R restart, F failure, Escape exit. */
-export function usePresentationShortcuts({ enabled, store, onExit, onFailure }: ShortcutOptions) {
-  useEffect(() => {
-    if (!enabled) return;
+/**
+ * True when a keypress belongs to whatever the learner is typing in, rather
+ * than to the simulation.
+ */
+export function isTypingTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  if (element.isContentEditable) return true;
+  return ["INPUT", "TEXTAREA", "SELECT", "OPTION"].includes(element.tagName);
+}
 
+/** Space and Enter belong to a focused button or link, not to playback. */
+function isActivatableTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  return element ? ["BUTTON", "A", "SUMMARY"].includes(element.tagName) : false;
+}
+
+/**
+ * Playback keys for every simulation, in learner mode as well as presentation:
+ * Space play/pause, arrows step, R restart, F failure, Escape leaves presenting.
+ */
+export function useSimulationShortcuts({ presenting, store, onExit, onFailure, onInteraction }: ShortcutOptions) {
+  useEffect(() => {
     function handle(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      // Never hijack keys while an instructor is typing.
-      if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+      // Dialogs and the walkthrough own their keys, including arrows and Escape.
+      if (event.defaultPrevented || document.querySelector("dialog[open], [role='dialog'][aria-modal='true'], .driver-active")) return;
+      if (isTypingTarget(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       const state = store?.getState();
       switch (event.key) {
         case " ":
+          // Let Space press whatever button currently has focus.
+          if (isActivatableTarget(event.target)) return;
           event.preventDefault();
           if (!state) return;
           if (state.status === "playing") state.pause(); else state.play();
+          onInteraction?.();
           return;
         case "ArrowRight":
           event.preventDefault();
           state?.next();
+          if (state) onInteraction?.();
           return;
         case "ArrowLeft":
           event.preventDefault();
           state?.previous();
+          if (state) onInteraction?.();
           return;
         case "r":
         case "R":
           event.preventDefault();
           state?.restart();
+          if (state) onInteraction?.();
           return;
         case "f":
         case "F":
           event.preventDefault();
           onFailure?.();
+          if (onFailure) onInteraction?.();
           return;
         case "Escape":
+          if (!presenting) return;
           event.preventDefault();
           onExit();
           return;
@@ -92,5 +121,5 @@ export function usePresentationShortcuts({ enabled, store, onExit, onFailure }: 
 
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);
-  }, [enabled, store, onExit, onFailure]);
+  }, [presenting, store, onExit, onFailure, onInteraction]);
 }

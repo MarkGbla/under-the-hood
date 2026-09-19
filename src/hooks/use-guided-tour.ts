@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { Driver } from "driver.js";
 import { getTourStatus, saveTourStatus } from "@/lib/storage";
 
 const TOUR_ID = "login";
@@ -14,7 +15,17 @@ export function useGuidedTour() {
   );
   const [choiceDismissed, setChoiceDismissed] = useState(false);
   const [guideError, setGuideError] = useState<string | null>(null);
+  const guideRef = useRef<Driver | null>(null);
+  const pendingRef = useRef(false);
+  const generationRef = useRef(0);
   const showChoice = isFirstVisit && !choiceDismissed;
+
+  useEffect(() => () => {
+    generationRef.current += 1;
+    pendingRef.current = false;
+    guideRef.current?.destroy();
+    guideRef.current = null;
+  }, []);
 
   const exploreWithoutGuide = useCallback(() => {
     saveTourStatus(TOUR_ID, "skipped");
@@ -22,11 +33,17 @@ export function useGuidedTour() {
   }, []);
 
   const startGuide = useCallback(async () => {
+    if (pendingRef.current || guideRef.current?.isActive()) return;
+    pendingRef.current = true;
+    const generation = generationRef.current;
     setChoiceDismissed(true);
     setGuideError(null);
 
     try {
       const { driver } = await import("driver.js");
+      // A learner can navigate away while the optional tour bundle is loading.
+      if (generation !== generationRef.current) return;
+      const previousFocus = document.activeElement;
       let outcomeRecorded = false;
       const recordOutcome = (status: "completed" | "skipped") => {
         if (outcomeRecorded) return;
@@ -56,7 +73,13 @@ export function useGuidedTour() {
           recordOutcome("completed");
           guide.destroy();
         },
-        onDestroyed: () => recordOutcome("skipped"),
+        onDestroyed: () => {
+          recordOutcome("skipped");
+          guideRef.current = null;
+          if (generation === generationRef.current && previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+            previousFocus.focus();
+          }
+        },
         steps: [
           { element: "[data-tour='browser']", popover: { title: "Start in the browser", description: "A login begins in the interface the learner can see and control." } },
           { element: "[data-tour='login-action']", popover: { title: "Send simulated credentials", description: "Use the visible demo password for success, or change it to see a safe 401 failure." } },
@@ -69,9 +92,16 @@ export function useGuidedTour() {
         ],
       });
 
+      guideRef.current = guide;
       guide.drive();
     } catch {
-      setGuideError("The walkthrough could not load. The simulator is still fully available below.");
+      guideRef.current?.destroy();
+      guideRef.current = null;
+      if (generation === generationRef.current) {
+        setGuideError("The walkthrough could not load. The simulator is still fully available below.");
+      }
+    } finally {
+      if (generation === generationRef.current) pendingRef.current = false;
     }
   }, []);
 
